@@ -1,0 +1,162 @@
+module cache_fill_FSM(clk, wen, rst_n, miss_detected, miss_address, memory_data, memory_data_valid,
+						fsm_busy, write_data_array, write_tag_array, memory_address, write_valid_bit);
+	
+	input clk, rst_n, wen;
+	input miss_detected; 			// active high when tag match logic detects a miss
+	input [15:0] miss_address; 		// address that missed the cache
+	output reg fsm_busy; 			// asserted while FSM is busy handling the miss (can be used as pipeline stall signal)
+	output reg write_data_array; 	// write enable to cache data array to signal when filling with memory_data
+	output reg write_tag_array, write_valid_bit; 	// write enable to cache tag array to signal when all words are filled in to data array
+	output reg [15:0] memory_address; // address to read from memory
+	input [15:0] memory_data; 		// data returned by memory (after  delay)
+	output [15:0] cache_memory_data;  // data written to cache
+	output [15:0] cache_memory_addr;  // addr to write in cache	
+	input memory_data_valid; 		// active high indicates valid data returning on memory bus
+	
+	reg state,nxt_state;			//to hold state of FSM
+	
+	
+	reg [15:0]count_inter, count_out, count_in, address_inter, addressinitial;
+	reg inc;
+
+	dff state_reg(.q(state), .d(nxt_state), .wen(wen), .clk(clk), .rst(rst_n));						// FSM state 
+	dff5_bit counter(.q(count_inter), .d(count_out), .wen(wen), .clk(clk), .rst(rst_n));			// Byte counter 
+	Ripple_Carry_5_bit RC1(.s(count_out), .ovflw(), .c_out(), .a(count_in), .b(inc), .c_in(1'b0));  // Byte counter adder
+	Adder_16b Add_16b(.a(addressinitial), .b(16'h8), .cin(1'b0), .sum(memory_address), .cout());	// 16 bit adder 
+	
+	assign start_addr = {miss_address[15:4],4'h0};     							//start addr of mem block to be retrieved
+	assign address_inter = memory_address;		
+
+	always_comb begin
+	case (state)
+		0: 	begin	//idle state
+				write_data_array = 0;
+				fsm_busy = (miss_detected) ? 1 : 0;
+				nxt_state = (miss_detected) ? 1 : 0;
+				memory_address = {miss_address[15:4],4'h0};			
+				write_tag_array = 0;
+				write_valid_bit = 0;
+				count_in = 0;
+				inc = 0;
+				addressinitial = (miss_detected) ? {miss_address[15:4],4'h0} : 16'h0;		// ??
+			end
+		
+		1: 	begin	//wait state
+		
+				
+				write_data_array = memory_data_valid ? 1 : 0;
+				inc = memory_data_valid ? 1 : 0;
+				
+				
+				write_tag_array = (count_inter==5'b11111) ? 1:0;
+				addressinitial = (count_inter[1]!=count_in[1]) ? address_inter:addressinitial;
+				fsm_busy = 1;
+				nxt_state = (count_out==5'b11111) ? 0 : 1;
+				count_in = count_inter;
+			end
+			
+		default: nxt_state = 0; 	//0 is idle
+
+	endcase
+	end
+endmodule
+
+
+module Adder_16b (input  [15:0] a, b, input cin,
+                  output [15:0] sum, output cout);
+
+  wire [16:0] c;        // carry bits
+
+  assign c[0] = cin;	// carry input
+  assign cout = c[16];	// carry output
+
+  // assignment of 16-bit vectors
+  assign sum[15:0] = (a[15:0] ^ b[15:0]) ^ c[15:0];
+
+  assign c[16:1]   = (a[15:0] & b[15:0]) | 
+                     (a[15:0] ^ b[15:0]) & c[15:0];
+
+endmodule
+
+
+module Ripple_Carry_3_bit(s,ovflw,c_out,a,b,c_in);
+
+//input 1
+input [4:0]a;	//4 bit input a	
+wire a0=a[0];
+wire a1=a[1];
+wire a2=a[2];
+wire a3=a[3];
+wire a4=a[4];
+//input 2 4 bit input b
+input [4:0]b;
+wire b0=b[0];	
+wire b1=b[1];
+wire b2=b[2];
+wire b3=b[3];
+wire b4=b[4];
+//carry input
+input c_in;
+//sum
+output c_out;
+output [4:0]s;
+//carry_out
+output ovflw;
+
+//wires for carry
+wire c0,c1,c2,c3;	
+
+//use the full adder to make ripple carry adder
+Full_Adder FA0(s[0],c1,a0,b0,c_in),FA1(s[1],c2,a1,b1,c1),FA2(s[2],c3,a2,b2,c2),FA3(s[3],c4,a3,b3,c3),FA4(s[4],c_out,a4,b4,c4);
+assign ovflw=c3^c_out;	//overflow will be c3 exor c_out
+endmodule
+module Full_Adder(sumfa,carryfa,afa,bfa,c_infa);
+
+input afa;	//input 1
+input bfa;	//input 2
+input c_infa;	//carry input
+wire s1,c1,c2;
+output sumfa;	//sum
+output carryfa;	//carry out
+
+//sum
+assign sumfa=afa^bfa^c_infa;
+//carry output
+assign carryfa=(afa&bfa)|(c_infa&(afa^bfa));
+endmodule
+module dff5_bit (q, d, wen, clk, rst);
+
+    output         [4:0]q; //DFF output
+    input          [4:0]d; //DFF input
+    input 	   	   wen; //Write Enable
+    input          clk; //Clock
+    input          rst; //Reset (used synchronously)
+
+    reg            [4:0]state;
+
+    assign q = state;
+
+    always @(posedge clk) begin
+      state = rst ? 0 : (wen ? d : state);
+    end
+
+endmodule
+// Gokul's D-flipflop
+
+module dff (q, d, wen, clk, rst);
+
+    output         q; //DFF output
+    input          d; //DFF input
+    input 	   	   wen; //Write Enable
+    input          clk; //Clock
+    input          rst; //Reset (used synchronously)
+
+    reg            state;
+
+    assign q = state;
+
+    always @(posedge clk) begin
+      state = rst ? 0 : (wen ? d : state);
+    end
+
+endmodule
